@@ -469,7 +469,7 @@ class Compositor {
         passEncoder.draw(6, 1, 0, 0);
         if (passEncoder.end) { passEncoder.end(); }
         device.queue.submit([commandEncoder.finish()]);
-        if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); }
+        if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); } else { await new Promise(requestAnimationFrame); }
 
         // encode as raw PNG image
         const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
