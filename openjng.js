@@ -472,13 +472,15 @@ class Compositor {
         if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); } else { await new Promise(requestAnimationFrame); }
 
         // encode as raw PNG image
-        const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
+        /*const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
         const FR = new FileReader();
         FR.readAsArrayBuffer(blob);
         const READ = new Promise(resolve => {
             FR.onload = ()=>resolve(FR.result);
         });
-        return await READ;
+        return await READ;*/
+
+        return canvas.transferToImageBitmap();
     }
 }
 
@@ -598,22 +600,22 @@ class OpenJNG {
         if (this.checkSignature()) {
             if (this.A) {
                 var compositor = await (new Compositor().init(this.header.width, this.header.height));
-                var binPNG = await compositor.composite(await this.RGB, await this.A);
-                return await new InjectPNG(this.reader.chunks, this.header).recode(binPNG);//.encode(pixelData);
-            } else {
-                let canvas = new OffscreenCanvas(this.header.width, this.header.height);
-                let ctx = canvas.getContext("2d");
-                ctx.drawImage(await this.RGB, 0, 0);
-                
-                //
-                const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
-                const FR = new FileReader();
-                FR.readAsArrayBuffer(blob);
-                const READ = new Promise(resolve => {
-                    FR.onload = ()=>resolve(FR.result);
-                });
-                return await new InjectPNG(this.reader.chunks, this.header).recode(await READ);
+                this.RGB = compositor.composite(await this.RGB, await this.A);
             }
+
+            //
+            let canvas = new OffscreenCanvas(this.header.width, this.header.height);
+            let ctx = canvas.getContext("2d");
+            ctx.drawImage(await this.RGB, 0, 0);
+            
+            //
+            const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
+            const FR = new FileReader();
+            FR.readAsArrayBuffer(blob);
+            const READ = new Promise(resolve => {
+                FR.onload = ()=>resolve(FR.result);
+            });
+            return await new InjectPNG(this.reader.chunks, this.header).recode(await READ);
         }
         return null;
     }
