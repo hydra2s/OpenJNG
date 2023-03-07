@@ -123,6 +123,7 @@ let toBlob = (canvas, mimeType, quality) => {
     });
 }
 
+//
 class EncodePNG {
     constructor(chunks, header) {
         // import ancilary data 
@@ -241,8 +242,8 @@ class Compositor {
         this.webCS = await WebCS.create({width:W, height:H});
         this.kernel = this.webCS.createShader(RGB_alpha,
             { local_size: [16, 16, 1], groups: [Math.ceil(W/16), Math.ceil(H/16), 1], params: { 
-                'RGB': '[][]', 
-                'A': '[][]',
+                'RGB': 'rgba8unorm[][]', 
+                'A': 'rgba8unorm[][]',
                 'OUT': 'u32[]'
             }});
         return this;
@@ -374,7 +375,7 @@ class OpenJNG {
         if (this.A) {
             var compositor = await (new Compositor().init(this.header.width, this.header.height));
             var pixelData = await compositor.composite(await this.RGB, await this.A);
-            return new EncodePNG(this.reader.chunks, this.header).encode(pixelData);
+            return await new EncodePNG(this.reader.chunks, this.header).encode(pixelData);
         } else {
             let canvas = document.createElement("canvas");
             canvas.width  = this.header.width;
@@ -382,10 +383,13 @@ class OpenJNG {
             let ctx = canvas.getContext("2d");
             ctx.drawImage(await this.RGB, 0, 0);
 
-            //
-            let rawPNG = canvas.toDataURL("image/png", 0).replace(/^data:image\/png;base64,/, "");
-            let binPNG = Uint8Array.from(atob(rawPNG), c => c.charCodeAt(0)).buffer;
-            return new EncodePNG(this.reader.chunks, this.header).recode(binPNG);
+            // get pure PNG, with original JNG chunks
+            return await new EncodePNG(this.reader.chunks, this.header).encode(ctx.getImageData(0, 0, this.header.width, this.header.height).data);
+
+            // incorrect gamma
+            //let rawPNG = canvas.toDataURL("image/png", 0).replace(/^data:image\/png;base64,/, "");
+            //let binPNG = Uint8Array.from(atob(rawPNG), c => c.charCodeAt(0)).buffer;
+            //return await new EncodePNG(this.reader.chunks, this.header).recode(binPNG);
         }
     }
 

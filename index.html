@@ -9,6 +9,12 @@
     <script src="openjng.js"></script>
 </head>
 <body>
-    <script src="test.js"></script>
+    <script>(async()=>{
+
+        var jng = new OpenJNG();
+        document.body.appendChild(await (await jng.load("./img/opossum.jng")).recodePNG());
+
+    })();
+    </script>
 </body>
 </html>
