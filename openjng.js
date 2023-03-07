@@ -151,7 +151,9 @@ class EncodePNG {
             this.reader.makeSlice();
         }
         
-        return loadImage(encodeURL([this.PNGsignature, ...this.inject().reader.chunks.map((chunk)=>{
+        return loadImage(encodeURL([this.PNGsignature, ...this.inject().reader.chunks.filter((chunk)=>{
+            return chunk.name == "IHDR" || chunk.name == "IDAT" || chunk.name == "IEND";
+        }).map((chunk)=>{
             return chunk.slice;
         })], "image/png"));
     }
@@ -221,43 +223,187 @@ class Compositor {
 
     async init(W,H) {
         this.W = W, this.H = H;
-
-        // their library is piece of sh&t, needs rewrite to WebGPU, and not waiting a (negative) answer
-        let RGB_alpha = (RGB, A, OUT) => {
-            return `
-            var pos:vec2<u32> = vec2<u32>(thread.xy);
-            var size:vec2u = vec2u(${this.W}, ${this.H});
-            var L:u32 = pos.y*size.x + pos.x;
-            if (pos.x < size.x && pos.y < size.y) {
-                var rgb:vec4<f32> = RGB[pos.y][pos.x];
-                var   a:vec4<f32> =   A[pos.y][pos.x];
-                OUT[L]  =  u32(rgb.x*255.f)&0xFF;
-                OUT[L] |= (u32(rgb.y*255.f)&0xFF)<<8;
-                OUT[L] |= (u32(rgb.z*255.f)&0xFF)<<16;
-                OUT[L] |= (u32(a.x*255.f)&0xFF)<<24;
-            }
-            `;
-        }
         
-        this.webCS = await WebCS.create({width:W, height:H});
-        this.kernel = this.webCS.createShader(RGB_alpha,
-            { local_size: [16, 16, 1], groups: [Math.ceil(W/16), Math.ceil(H/16), 1], params: { 
-                'RGB': 'rgba8unorm[][]', 
-                'A': 'rgba8unorm[][]',
-                'OUT': 'u32[]'
-            }});
+        //
+        const canvas = new OffscreenCanvas(W, H);
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+        const context = canvas.getContext('webgpu', {
+            premultipliedAlpha: true,
+            preserveDrawingBuffer: true
+        });
+        const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+        //
+        this.canvas = canvas;
+        this.context = context;
+        this.device = device;
+        this.adapter = adapter;
+        this.presentationFormat = presentationFormat;
+
+        //
+        context.configure({
+            device,
+            format: presentationFormat,
+            alphaMode: 'premultiplied',
+        });
+
+        //
+        this.pipeline = device.createRenderPipeline({
+            layout: 'auto',
+            vertex: {
+                module: device.createShaderModule({ code: `
+                @group(0) @binding(1) var eSampler: sampler;
+                @group(0) @binding(2) var RGBtex: texture_2d<f32>;
+                @group(0) @binding(3) var Atex: texture_2d<f32>;
+
+                struct VertexOutput {
+                    @builtin(position) Position : vec4<f32>,
+                    @location(0) fragUV : vec2<f32>,
+                }
+                
+                @vertex
+                fn main(
+                    @builtin(vertex_index) vIndex: u32,
+                ) -> VertexOutput {
+                    var output : VertexOutput;
+
+                    if (vIndex == 0) { output.Position = vec4<f32>(-1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 0.0); }
+                    if (vIndex == 1) { output.Position = vec4<f32>( 1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 0.0); }
+                    if (vIndex == 2) { output.Position = vec4<f32>(-1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 1.0); }
+
+                    if (vIndex == 3) { output.Position = vec4<f32>(-1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 1.0); }
+                    if (vIndex == 4) { output.Position = vec4<f32>( 1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 0.0); }
+                    if (vIndex == 5) { output.Position = vec4<f32>( 1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 1.0); }
+
+                    return output;
+                }
+                ` }),
+                entryPoint: 'main',
+            },
+            fragment: {
+                module: device.createShaderModule({ code: `
+                @group(0) @binding(1) var eSampler: sampler;
+                @group(0) @binding(2) var RGBtex: texture_2d<f32>;
+                @group(0) @binding(3) var Atex: texture_2d<f32>;
+                
+                @fragment
+                fn main(
+                    @location(0) fragUV: vec2<f32>
+                ) -> @location(0) vec4<f32> {
+                    return vec4<f32>(textureSample(RGBtex, eSampler, fragUV).xyz, textureSample(Atex, eSampler, fragUV).x);
+                }
+` }),
+                entryPoint: 'main',
+                targets: [{ format: presentationFormat }],
+            },
+            primitive: {
+                topology: 'triangle-list',
+            },
+        });
+
         return this;
     }
 
     // composite for PNG encoding
-    async composite(RGB, A) {
-        let OUT = this.webCS.createBuffer(this.W*this.H*4);
-        let INPUT = { RGB, A, OUT };
-        await this.kernel.run(INPUT.RGB, INPUT.A, INPUT.OUT);
+    async composite(RGBp, Ap) {
+        const device = this.device;
+        const context = this.context;
+        const canvas = this.canvas;
 
-        //new Uint8Array(this.W*this.H*4);
-        var RGBA8OUT = this.webCS.getData(OUT, "uint8");
-        return RGBA8OUT;
+        //
+        const RGB = await createImageBitmap(await RGBp);
+        const A = await createImageBitmap(await Ap);
+        
+        //
+        const RGBtex = device.createTexture({
+            size: [RGB.width, RGB.height, 1],
+            format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        const Atex = device.createTexture({
+            size: [A.width, A.height, 1],
+            format: 'r8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        //
+        device.queue.copyExternalImageToTexture({ source: RGB }, { texture: RGBtex }, [RGB.width, RGB.height]);
+        device.queue.copyExternalImageToTexture({ source: A }, { texture: Atex }, [A.width, A.height]);
+
+        //
+        const commandEncoder = device.createCommandEncoder();
+        const textureView = context.getCurrentTexture().createView();
+        const renderPassDescriptor = { colorAttachments: [
+            {
+                view: textureView,
+                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+                loadOp: 'clear',
+                storeOp: 'store',
+            },
+        ]};
+
+        //
+        const uniformBufferSize = 8;
+        const uniformBuffer = device.createBuffer({
+            size: uniformBufferSize,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        //
+        const sampler = device.createSampler({
+            magFilter: "nearest",
+            minFilter: "nearest",
+        });
+
+        //
+        const uniformBindGroup = device.createBindGroup({
+            layout: this.pipeline.getBindGroupLayout(0),
+            entries: [
+                {
+                    binding: 1,
+                    resource: sampler,
+                    visibility: 0x3
+                },
+                {
+                    binding: 2,
+                    resource: RGBtex.createView(),
+                    visibility: 0x3
+                },
+                {
+                    binding: 3,
+                    resource: Atex.createView(),
+                    visibility: 0x3
+                },
+            ],
+        });
+        
+        //
+        var SIZE = new Uint32Array([this.W, this.H]);
+        device.queue.writeBuffer(
+            uniformBuffer, 0,
+            SIZE.buffer,
+            SIZE.byteOffset,
+            SIZE.byteLength
+        );
+
+        //
+        const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+        passEncoder.setPipeline(this.pipeline);
+        passEncoder.setBindGroup(0, uniformBindGroup);
+        passEncoder.draw(6, 1, 0, 0);
+        passEncoder.end();
+        device.queue.submit([commandEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+
+        // encode as raw PNG image
+        const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
+        const FR = new FileReader();
+        FR.readAsArrayBuffer(blob);
+        const READ = new Promise(resolve => {
+            FR.onload = ()=>resolve(FR.result);
+        });
+        return await READ;
     }
 }
 
@@ -374,22 +520,21 @@ class OpenJNG {
     async recodePNG() {
         if (this.A) {
             var compositor = await (new Compositor().init(this.header.width, this.header.height));
-            var pixelData = await compositor.composite(await this.RGB, await this.A);
-            return await new EncodePNG(this.reader.chunks, this.header).encode(pixelData);
+            var binPNG = await compositor.composite(await this.RGB, await this.A);
+            return await new EncodePNG(this.reader.chunks, this.header).recode(binPNG);//.encode(pixelData);
         } else {
-            let canvas = document.createElement("canvas");
-            canvas.width  = this.header.width;
-            canvas.height = this.header.height;
+            let canvas = new OffscreenCanvas(this.header.width, this.header.height);
             let ctx = canvas.getContext("2d");
             ctx.drawImage(await this.RGB, 0, 0);
-
-            // get pure PNG, with original JNG chunks
-            return await new EncodePNG(this.reader.chunks, this.header).encode(ctx.getImageData(0, 0, this.header.width, this.header.height).data);
-
-            // incorrect gamma
-            //let rawPNG = canvas.toDataURL("image/png", 0).replace(/^data:image\/png;base64,/, "");
-            //let binPNG = Uint8Array.from(atob(rawPNG), c => c.charCodeAt(0)).buffer;
-            //return await new EncodePNG(this.reader.chunks, this.header).recode(binPNG);
+            
+            //
+            const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
+            const FR = new FileReader();
+            FR.readAsArrayBuffer(blob);
+            const READ = new Promise(resolve => {
+                FR.onload = ()=>resolve(FR.result);
+            });
+            return await new EncodePNG(this.reader.chunks, this.header).recode(await READ);
         }
     }
 
