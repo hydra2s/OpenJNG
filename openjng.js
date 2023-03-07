@@ -124,7 +124,7 @@ let toBlob = (canvas, mimeType, quality) => {
 }
 
 //
-class EncodePNG {
+class InjectPNG {
     constructor(chunks, header) {
         // import ancilary data 
         this.PNGsignature = new Uint8Array([137,80,78,71,13,10,26,10]);
@@ -232,7 +232,7 @@ class Compositor {
             premultipliedAlpha: true,
             preserveDrawingBuffer: true
         });
-        const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+        const presentationFormat = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm';
 
         //
         this.canvas = canvas;
@@ -247,16 +247,82 @@ class Compositor {
             format: presentationFormat,
             alphaMode: 'premultiplied',
         });
+        
+        //
+        const bindGroupLayout = device.createBindGroupLayout({
+            entries: [
+                {binding: 0, visibility: 0x2, sampler: { type: "filtering" } },
+                {binding: 1, visibility: 0x2, texture: { access: "read-only", format: "rgba8unorm", viewDimension: "2d" } },
+                {binding: 2, visibility: 0x2, texture: { access: "read-only", format: "rgba8unorm", viewDimension: "2d" } }
+            ]
+        });
+
+        //
+        this.posBufData = new Float32Array([
+            -1.0,  1.0,
+             1.0,  1.0,
+            -1.0, -1.0,
+
+            -1.0, -1.0,
+             1.0,  1.0,
+             1.0, -1.0,
+        ]);
+        this.posBuf = device.createBuffer({
+            size: this.posBufData.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(
+          this.posBuf,
+          0,
+          this.posBufData.buffer,
+          this.posBufData.byteOffset,
+          this.posBufData.byteLength
+        );
+        
+        //
+        this.texBufData = new Float32Array([
+            0.0, 0.0,
+            1.0, 0.0,
+            0.0, 1.0,
+
+            0.0, 1.0,
+            1.0, 0.0,
+            1.0, 1.0,
+        ]);
+        this.texBuf = device.createBuffer({
+            size: this.texBufData.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(
+          this.texBuf,
+          0,
+          this.texBufData.buffer,
+          this.texBufData.byteOffset,
+          this.texBufData.byteLength
+        );
 
         //
         this.pipeline = device.createRenderPipeline({
-            layout: 'auto',
+            layout: device.createPipelineLayout({
+                bindGroupLayouts: [bindGroupLayout]
+            }),
             vertex: {
+                 buffers: [{
+                    arrayStride: 4*2,
+                    attributes: [{ // position
+                          shaderLocation: 0,
+                          offset: 0,
+                          format: 'float32x2',
+                    }],
+                }, {
+                    arrayStride: 4*2,
+                    attributes: [{ // UV
+                          shaderLocation: 1,
+                          offset: 0,
+                          format: 'float32x2',
+                    }],
+                }],
                 module: device.createShaderModule({ code: `
-                @group(0) @binding(1) var eSampler: sampler;
-                @group(0) @binding(2) var RGBtex: texture_2d<f32>;
-                @group(0) @binding(3) var Atex: texture_2d<f32>;
-
                 struct VertexOutput {
                     @builtin(position) Position : vec4<f32>,
                     @location(0) fragUV : vec2<f32>,
@@ -264,18 +330,13 @@ class Compositor {
                 
                 @vertex
                 fn main(
+                    @location(0) position : vec2<f32>,
+                    @location(1) uv : vec2<f32>,
                     @builtin(vertex_index) vIndex: u32,
                 ) -> VertexOutput {
                     var output : VertexOutput;
-
-                    if (vIndex == 0) { output.Position = vec4<f32>(-1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 0.0); }
-                    if (vIndex == 1) { output.Position = vec4<f32>( 1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 0.0); }
-                    if (vIndex == 2) { output.Position = vec4<f32>(-1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 1.0); }
-
-                    if (vIndex == 3) { output.Position = vec4<f32>(-1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 0.0, 1.0); }
-                    if (vIndex == 4) { output.Position = vec4<f32>( 1.0,  1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 0.0); }
-                    if (vIndex == 5) { output.Position = vec4<f32>( 1.0, -1.0, 0.0, 1.0); output.fragUV = vec2<f32>( 1.0, 1.0); }
-
+                    output.Position = vec4<f32>(position, 0.0, 1.0); 
+                    output.fragUV = uv;
                     return output;
                 }
                 ` }),
@@ -283,9 +344,9 @@ class Compositor {
             },
             fragment: {
                 module: device.createShaderModule({ code: `
-                @group(0) @binding(1) var eSampler: sampler;
-                @group(0) @binding(2) var RGBtex: texture_2d<f32>;
-                @group(0) @binding(3) var Atex: texture_2d<f32>;
+                @group(0) @binding(0) var eSampler: sampler;
+                @group(0) @binding(1) var RGBtex: texture_2d<f32>;
+                @group(0) @binding(2) var Atex: texture_2d<f32>;
                 
                 @fragment
                 fn main(
@@ -295,7 +356,18 @@ class Compositor {
                 }
 ` }),
                 entryPoint: 'main',
-                targets: [{ format: presentationFormat }],
+                targets: [{ format: presentationFormat, blend: {
+                    color: {
+                        operation: "add",
+                        srcFactor: "one",
+                        dstFactor: "one"
+                    },
+                    alpha: {
+                        operation: "add",
+                        srcFactor: "one",
+                        dstFactor: "one"
+                    }
+                } }],
             },
             primitive: {
                 topology: 'triangle-list',
@@ -338,8 +410,9 @@ class Compositor {
             {
                 view: textureView,
                 clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
-                loadOp: 'clear',
+                loadOp: 'load',
                 storeOp: 'store',
+                loadValue: 'load',
             },
         ]};
 
@@ -361,17 +434,17 @@ class Compositor {
             layout: this.pipeline.getBindGroupLayout(0),
             entries: [
                 {
-                    binding: 1,
+                    binding: 0,
                     resource: sampler,
                     visibility: 0x3
                 },
                 {
-                    binding: 2,
+                    binding: 1,
                     resource: RGBtex.createView(),
                     visibility: 0x3
                 },
                 {
-                    binding: 3,
+                    binding: 2,
                     resource: Atex.createView(),
                     visibility: 0x3
                 },
@@ -389,12 +462,14 @@ class Compositor {
 
         //
         const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+        passEncoder.setVertexBuffer(0, this.posBuf);
+        passEncoder.setVertexBuffer(1, this.texBuf);
         passEncoder.setPipeline(this.pipeline);
         passEncoder.setBindGroup(0, uniformBindGroup);
         passEncoder.draw(6, 1, 0, 0);
-        passEncoder.end();
+        if (passEncoder.end) { passEncoder.end(); }
         device.queue.submit([commandEncoder.finish()]);
-        await device.queue.onSubmittedWorkDone();
+        if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); }
 
         // encode as raw PNG image
         const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
@@ -437,7 +512,11 @@ class OpenJNG {
     equal32(a, b) {
         const ua = new Uint32Array(a.buffer, a.byteOffset, a.byteLength / 4);
         const ub = new Uint32Array(b.buffer, b.byteOffset, b.byteLength / 4);
-        return compare(ua, ub);
+        return this.compare(ua, ub);
+    }
+    
+    checkSignature() {
+        return this.equal32(this.reader.signature, this.JNGSignature);
     }
     
     concat(resultConstructor, ...arrays) {
@@ -454,17 +533,6 @@ class OpenJNG {
         return result;
     }
 
-    async load(URL) {
-        let response = await fetch(URL);
-        if (response.ok) {
-            this.reader = new DataReader(await response.arrayBuffer());
-            this.readImage();
-        } else {
-            console.error("Error HTTP: " + response.status);
-        }
-        return this;
-    }
-
     readImage() {
         this.reader.readSignature();
         while (this.reader.offset < this.reader.data.byteLength) {
@@ -477,16 +545,18 @@ class OpenJNG {
         this.readHeader();
 
         //
-        this.RGB = this.concatJDAT();
-        {
-            if (this.alphaHeader.compression == 8 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "JDAA" || chunk.name == "JdAA";})) { this.A = this.concatJDAA(); } else
-            if (this.alphaHeader.compression == 0 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "IDAT";})) { this.A = this.reconstructPNG(); };
+        if (this.checkSignature()) {
+            this.RGB = this.concatJDAT();
+            {
+                if (this.alphaHeader.compression == 8 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "JDAA" || chunk.name == "JdAA";})) { this.A = this.concatJDAA(); } else
+                if (this.alphaHeader.compression == 0 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "IDAT";})) { this.A = this.reconstructPNG(); };
+            }
         }
         
         //
         return this;
     }
-
+    
     readHeader() {
         var header = this.reader.chunks.find((chunk)=>{ return chunk.name === "JHDR"; });
         this.alphaHeader.width = this.header.width = header.view.getUint32(0, false);
@@ -495,6 +565,17 @@ class OpenJNG {
         this.alphaHeader.compression = header.view.getUint8(13, false);
         this.alphaHeader.filter = header.view.getUint8(14, false);
         this.alphaHeader.interlace = header.view.getUint8(15, false);
+    }
+    
+    async load(URL) {
+        let response = await fetch(URL);
+        if (response.ok) {
+            this.reader = new DataReader(await response.arrayBuffer());
+            this.readImage();
+        } else {
+            console.error("Error HTTP: " + response.status);
+        }
+        return this;
     }
 
     async reconstructPNG() {
@@ -513,29 +594,28 @@ class OpenJNG {
         return loadImage(encodeURL(/*[this.concat(Uint8Array, JPEGc)]*/JPEGc, "image/jpeg"));
     }
 
-    checkSignature() {
-        return equal32(this.reader.signature, this.JNGSignature);
-    }
-
     async recodePNG() {
-        if (this.A) {
-            var compositor = await (new Compositor().init(this.header.width, this.header.height));
-            var binPNG = await compositor.composite(await this.RGB, await this.A);
-            return await new EncodePNG(this.reader.chunks, this.header).recode(binPNG);//.encode(pixelData);
-        } else {
-            let canvas = new OffscreenCanvas(this.header.width, this.header.height);
-            let ctx = canvas.getContext("2d");
-            ctx.drawImage(await this.RGB, 0, 0);
-            
-            //
-            const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
-            const FR = new FileReader();
-            FR.readAsArrayBuffer(blob);
-            const READ = new Promise(resolve => {
-                FR.onload = ()=>resolve(FR.result);
-            });
-            return await new EncodePNG(this.reader.chunks, this.header).recode(await READ);
+        if (this.checkSignature()) {
+            if (this.A) {
+                var compositor = await (new Compositor().init(this.header.width, this.header.height));
+                var binPNG = await compositor.composite(await this.RGB, await this.A);
+                return await new InjectPNG(this.reader.chunks, this.header).recode(binPNG);//.encode(pixelData);
+            } else {
+                let canvas = new OffscreenCanvas(this.header.width, this.header.height);
+                let ctx = canvas.getContext("2d");
+                ctx.drawImage(await this.RGB, 0, 0);
+                
+                //
+                const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
+                const FR = new FileReader();
+                FR.readAsArrayBuffer(blob);
+                const READ = new Promise(resolve => {
+                    FR.onload = ()=>resolve(FR.result);
+                });
+                return await new InjectPNG(this.reader.chunks, this.header).recode(await READ);
+            }
         }
+        return null;
     }
 
 }
