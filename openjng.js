@@ -352,8 +352,8 @@ class Compositor {
 
         //
         const sampler = device.createSampler({
-            magFilter: "nearest",
-            minFilter: "nearest",
+            magFilter: "linear",
+            minFilter: "linear",
         });
 
         //
@@ -478,9 +478,9 @@ class OpenJNG {
 
         //
         this.RGB = this.concatJDAT();
-        if (this.alphaHeader.bitDepth > 0) {
-            if (this.alphaHeader.compression == 8) { this.A = this.concatJDAA(); } else
-            if (this.alphaHeader.compression == 0) { this.A = this.reconstructPNG(); };
+        {
+            if (this.alphaHeader.compression == 8 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "JDAA" || chunk.name == "JdAA";})) { this.A = this.concatJDAA(); } else
+            if (this.alphaHeader.compression == 0 && this.alphaHeader.bitDepth > 0 || this.reader.chunks.find((chunk)=>{return chunk.name == "IDAT";})) { this.A = this.reconstructPNG(); };
         }
         
         //
@@ -508,7 +508,7 @@ class OpenJNG {
     }
 
     async concatJDAA() {
-        var JDATs = this.reader.chunks.filter((chunk)=>{return chunk.name == "JDAA";});
+        var JDATs = this.reader.chunks.filter((chunk)=>{return chunk.name == "JDAA" || chunk.name == "JdAA";});
         var JPEGc = JDATs.map((chunk)=>{ return chunk.data; });
         return loadImage(encodeURL(/*[this.concat(Uint8Array, JPEGc)]*/JPEGc, "image/jpeg"));
     }
