@@ -71,13 +71,15 @@ let loadImage = async (url) => {
         image.onload = ()=>{ resolve(image); };
         image.onerror = (e) => { reject(e); };
     });
-    image.src = url;
+    image.src = await url;
 
     // FOR DEBUG!
-    //image.width = 160;
-    //image.height = 120;
-    //image.alt = "Problematic";
-    //document.body.appendChild(image);
+    /*
+    image.width = 160;
+    image.height = 120;
+    image.alt = "Problematic";
+    document.body.appendChild(image);
+    */
 
     //
     return promise;
@@ -111,8 +113,25 @@ let concat = (resultConstructor, ...arrays) => {
 }
 
 //
-let encodeURL = (chunked, type) => {
-    return URL.createObjectURL(new Blob(chunked, {type}));
+let encodeURL = async (chunked, type, blob = false) => {
+    chunked = chunked.map((chunk)=>{
+        if (typeof chunk === "string") {
+            return new TextEncoder().encode(chunk);
+        }
+        return chunk;
+    });
+
+    const BLOB = new Blob(chunked, {type});
+    if (blob) { return URL.createObjectURL(BLOB); };
+    {
+        const FR = new FileReader();
+        FR.readAsDataURL(BLOB);
+        const READ = new Promise(resolve => {
+            FR.onload = ()=>resolve(FR.result);
+        });
+        return await READ;
+    }
+
     //return `data:${type};base64,${btoa(String.fromCharCode(...concat(Uint8Array, ...chunked)))}`;
 }
 
@@ -150,12 +169,17 @@ class InjectPNG {
             this.reader.readCRC();
             this.reader.makeSlice();
         }
-        
-        return loadImage(encodeURL([this.PNGsignature, ...this.inject().reader.chunks.filter((chunk)=>{
+
+        // TODO: separate chunks
+        this.reader.chunks = this.reader.chunks.filter((chunk)=>{
             return chunk.name == "IHDR" || chunk.name == "IDAT" || chunk.name == "IEND";
-        }).map((chunk)=>{
+        });
+        this.inject();
+        
+        //
+        return loadImage(encodeURL([this.PNGsignature, ...this.reader.chunks.map((chunk)=>{
             return chunk.slice;
-        })], "image/png"));
+        })], "image/png", true));
     }
 
     encode(pixelData) {
@@ -221,33 +245,16 @@ class Compositor {
         
     }
 
-    async init(W,H) {
-        this.W = W, this.H = H;
-        
-        //
-        const canvas = new OffscreenCanvas(W, H);
+    async init() {
         const adapter = await navigator.gpu.requestAdapter();
         const device = await adapter.requestDevice();
-        const context = canvas.getContext('webgpu', {
-            premultipliedAlpha: true,
-            preserveDrawingBuffer: true
-        });
         const presentationFormat = navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm';
 
         //
-        this.canvas = canvas;
-        this.context = context;
         this.device = device;
         this.adapter = adapter;
         this.presentationFormat = presentationFormat;
 
-        //
-        context.configure({
-            device,
-            format: presentationFormat,
-            alphaMode: 'premultiplied',
-        });
-        
         //
         const bindGroupLayout = device.createBindGroupLayout({
             entries: [
@@ -441,10 +448,21 @@ class Compositor {
     }
 
     // composite for PNG encoding
-    async composite(RGBp, Ap) {
+    async composite(W, H, RGBp, Ap) {
+        this.W = W, this.H = H;
+
+        //
         const device = this.device;
-        const context = this.context;
-        const canvas = this.canvas;
+        const canvas = new OffscreenCanvas(W, H);
+        const context = canvas.getContext('webgpu', {
+            premultipliedAlpha: true,
+            preserveDrawingBuffer: true
+        });
+        context.configure({
+            device,
+            format: this.presentationFormat,
+            alphaMode: 'premultiplied',
+        });
 
         //
         const RGB = await createImageBitmap(await RGBp);
@@ -465,9 +483,6 @@ class Compositor {
         //
         device.queue.copyExternalImageToTexture({ source: RGB }, { texture: RGBtex }, [RGB.width, RGB.height]);
         device.queue.copyExternalImageToTexture({ source: A }, { texture: Atex }, [A.width, A.height]);
-
-        //
-        const textureView = context.getCurrentTexture().createView();
         
         //
         const uniformBufferSize = 8;
@@ -520,6 +535,7 @@ class Compositor {
         );
 
         //
+        const textureView = context.getCurrentTexture().createView();
         const commandEncoder = device.createCommandEncoder();
         const renderPassDescriptor = { colorAttachments: [
             {
@@ -691,14 +707,32 @@ class OpenJNG {
     async recodePNG() {
         if (this.checkSignature()) {
             let canvas = null;
+            let IMAGE = null;
             if (this.A) {
-                var compositor = await (new Compositor().init(this.header.width, this.header.height));
-                canvas = await compositor.composite(await this.RGB, await this.A);
+                //if (!this.compositor) {
+                    //this.compositor = new Compositor().init();
+                //}
+                //canvas = await (await this.compositor).composite(this.header.width, this.header.height, await this.RGB, await this.A);
+                
+                let RGB = await this.RGB;
+                let A = await this.A;
+                await new Promise(requestAnimationFrame);
+
+                // kill almost instantly
+                IMAGE = loadImage(encodeURL([`<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+                <svg width="${this.header.width}" height="${this.header.height}" viewBox="0 0 ${this.header.width} ${this.header.height}" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny">
+                <defs><mask id="mask"><image xlink:href="${A.src}" width="${this.header.width}" height="${this.header.height}"/></mask></defs>
+                <image xlink:href="${RGB.src}" width="${this.header.width}" height="${this.header.height}" mask="url(#mask)"/>
+                </svg>
+                `], `image/svg+xml`));
             } else {
+                IMAGE = this.RGB;
+            } //else 
+            {
                 canvas = new OffscreenCanvas(this.header.width, this.header.height);
                 var ctx = canvas.getContext("2d");
                     ctx.clearRect(0, 0, this.header.width, this.header.height);
-                    ctx.drawImage(await this.RGB, 0, 0);
+                    ctx.drawImage(await IMAGE, 0, 0);
             }
 
             //
