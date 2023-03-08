@@ -171,9 +171,9 @@ class InjectPNG {
         }
 
         // TODO: separate chunks
-        //this.reader.chunks = this.reader.chunks.filter((chunk)=>{
-            //return chunk.name == "IHDR" || chunk.name == "IDAT" || chunk.name == "IEND";
-        //});
+        this.reader.chunks = this.reader.chunks.filter((chunk)=>{
+            return chunk.name == "IHDR" || chunk.name == "IDAT" || chunk.name == "IEND";
+        });
         this.inject();
         
         //
