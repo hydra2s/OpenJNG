@@ -256,6 +256,12 @@ class Compositor {
                 {binding: 2, visibility: 0x2, texture: { access: "read-only", format: "rgba8unorm", viewDimension: "2d" } }
             ]
         });
+        
+        //
+        const clearGroupLayout = device.createBindGroupLayout({
+            entries: [
+            ]
+        });
 
         //
         this.posBufData = new Float32Array([
@@ -302,12 +308,69 @@ class Compositor {
         );
 
         //
+        this.clearpip = device.createRenderPipeline({
+            layout: device.createPipelineLayout({
+                bindGroupLayouts: [clearGroupLayout]
+            }),
+            vertex: {
+                buffers: [{
+                    arrayStride: 4*2,
+                    attributes: [{ // position
+                          shaderLocation: 0,
+                          offset: 0,
+                          format: 'float32x2',
+                    }],
+                }],
+                module: device.createShaderModule({ code: `
+                struct VertexOutput {
+                    @builtin(position) Position : vec4<f32>,
+                }
+                
+                @vertex
+                fn main(
+                    @location(0) position : vec2<f32>,
+                    @builtin(vertex_index) vIndex: u32,
+                ) -> VertexOutput {
+                    var output : VertexOutput;
+                    output.Position = vec4<f32>(position, 0.0, 1.0);
+                    return output;
+                }
+                ` }),
+                entryPoint: 'main',
+            },
+            fragment: {
+                module: device.createShaderModule({ code: `
+                @fragment
+                fn main() -> @location(0) vec4<f32> {
+                    return vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f);
+                }
+` }),
+                entryPoint: 'main',
+                targets: [{ format: presentationFormat, blend: {
+                    color: {
+                        operation: "add",
+                        srcFactor: "zero",
+                        dstFactor: "zero"
+                    },
+                    alpha: {
+                        operation: "add",
+                        srcFactor: "zero",
+                        dstFactor: "zero"
+                    }
+                } }],
+            },
+            primitive: {
+                topology: 'triangle-list',
+            },
+        });
+
+        //
         this.pipeline = device.createRenderPipeline({
             layout: device.createPipelineLayout({
                 bindGroupLayouts: [bindGroupLayout]
             }),
             vertex: {
-                 buffers: [{
+                buffers: [{
                     arrayStride: 4*2,
                     attributes: [{ // position
                           shaderLocation: 0,
@@ -404,18 +467,8 @@ class Compositor {
         device.queue.copyExternalImageToTexture({ source: A }, { texture: Atex }, [A.width, A.height]);
 
         //
-        const commandEncoder = device.createCommandEncoder();
         const textureView = context.getCurrentTexture().createView();
-        const renderPassDescriptor = { colorAttachments: [
-            {
-                view: textureView,
-                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
-                loadOp: 'load',
-                storeOp: 'store',
-                loadValue: 'load',
-            },
-        ]};
-
+        
         //
         const uniformBufferSize = 8;
         const uniformBuffer = device.createBuffer({
@@ -452,6 +505,12 @@ class Compositor {
         });
         
         //
+        const clearBindGroup = device.createBindGroup({
+            layout: this.clearpip.getBindGroupLayout(0),
+            entries: [],
+        });
+        
+        //
         var SIZE = new Uint32Array([this.W, this.H]);
         device.queue.writeBuffer(
             uniformBuffer, 0,
@@ -461,6 +520,35 @@ class Compositor {
         );
 
         //
+        const commandEncoder = device.createCommandEncoder();
+        const renderPassDescriptor = { colorAttachments: [
+            {
+                view: textureView,
+                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+                loadOp: 'load',
+                storeOp: 'store',
+                loadValue: 'load',
+            },
+        ]};
+        const clearPassDescriptor = { colorAttachments: [
+            {
+                view: textureView,
+                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+                loadOp: 'load',
+                storeOp: 'store',
+                loadValue: 'load',
+            },
+        ]};
+
+        //
+        const clearEncoder = commandEncoder.beginRenderPass(clearPassDescriptor);
+        clearEncoder.setVertexBuffer(0, this.posBuf);
+        clearEncoder.setPipeline(this.clearpip);
+        clearEncoder.setBindGroup(0, clearBindGroup);
+        clearEncoder.draw(6, 1, 0, 0);
+        if (clearEncoder.end) { clearEncoder.end(); }
+
+        //
         const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
         passEncoder.setVertexBuffer(0, this.posBuf);
         passEncoder.setVertexBuffer(1, this.texBuf);
@@ -468,8 +556,12 @@ class Compositor {
         passEncoder.setBindGroup(0, uniformBindGroup);
         passEncoder.draw(6, 1, 0, 0);
         if (passEncoder.end) { passEncoder.end(); }
+        
+        //
         device.queue.submit([commandEncoder.finish()]);
-        if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); } else { await new Promise(requestAnimationFrame); }
+        
+        //
+        if (device.queue.onSubmittedWorkDone) { await device.queue.onSubmittedWorkDone(); } //else { await new Promise(requestAnimationFrame); }
 
         // encode as raw PNG image
         /*const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
@@ -480,7 +572,7 @@ class Compositor {
         });
         return await READ;*/
 
-        return canvas.transferToImageBitmap();
+        return canvas;//canvas.transferToImageBitmap();
     }
 }
 
@@ -598,16 +690,17 @@ class OpenJNG {
 
     async recodePNG() {
         if (this.checkSignature()) {
+            let canvas = null;
             if (this.A) {
                 var compositor = await (new Compositor().init(this.header.width, this.header.height));
-                this.RGB = compositor.composite(await this.RGB, await this.A);
+                canvas = await compositor.composite(await this.RGB, await this.A);
+            } else {
+                canvas = new OffscreenCanvas(this.header.width, this.header.height);
+                var ctx = canvas.getContext("2d");
+                    ctx.clearRect(0, 0, this.header.width, this.header.height);
+                    ctx.drawImage(await this.RGB, 0, 0);
             }
 
-            //
-            let canvas = new OffscreenCanvas(this.header.width, this.header.height);
-            let ctx = canvas.getContext("2d");
-            ctx.drawImage(await this.RGB, 0, 0);
-            
             //
             const blob = await (canvas.convertToBlob || canvas.toBlob).call(canvas, {type: "image/png"});
             const FR = new FileReader();
