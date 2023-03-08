@@ -8,6 +8,7 @@ JNG - JPEG Network Graphics. If be simply, it's JPEG (wrapper) with alpha channe
 
 - https://ru.wikipedia.org/wiki/JNG
 - https://en.wikipedia.org/wiki/JPEG_Network_Graphics
+- http://www.libpng.org/pub/mng/spec/jng.html
 
 ### What I did?
 
