@@ -720,7 +720,7 @@ class OpenJNG {
 
                 // kill almost instantly
                 IMAGE = loadImage(encodeURL([`<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-                <svg color-interpolation="linearRGB" width="${this.header.width}" height="${this.header.height}" viewBox="0 0 ${this.header.width} ${this.header.height}" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny">
+                <svg color-interpolation="auto" width="${this.header.width}" height="${this.header.height}" viewBox="0 0 ${this.header.width} ${this.header.height}" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny">
                 <defs><mask id="mask"><image xlink:href="${A.src}" width="${this.header.width}" height="${this.header.height}"/></mask></defs>
                 <image xlink:href="${RGB.src}" width="${this.header.width}" height="${this.header.height}" mask="url(#mask)"/>
                 </svg>
