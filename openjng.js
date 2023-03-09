@@ -724,7 +724,7 @@ class OpenJNG {
                 <defs><mask id="mask"><image xlink:href="${A.src}" width="${this.header.width}" height="${this.header.height}"/></mask></defs>
                 <image xlink:href="${RGB.src}" width="${this.header.width}" height="${this.header.height}" mask="url(#mask)"/>
                 </svg>
-                `], `image/svg+xml`));
+                `], `image/svg+xml`, true));
             } else {
                 IMAGE = this.RGB;
             } //else 
